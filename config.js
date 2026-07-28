@@ -56,7 +56,7 @@ const config = {
     OWNER_NUMBER: '923174838990',
     DEV: '923131613251',
     IK_IMAGE_PATH: './lib/ERFAN.jpg',
-    BOT_IMAGE: 'https://i.ibb.co/CpkMP9yk/ERFAN.jpg',
+    BOT_IMAGE: 'https://files.catbox.moe/pb5yiz.jpg',
     
     // Newsletter Configuration
     NEWSLETTER_JID: '120363404811118873@newsletter',
@@ -115,7 +115,7 @@ const config = {
         MODE: 'public',
         PREFIX: '.',
         BOT_NAME: '𝐆ʜᴏsᴛ-𝐌ᴅ',
-        BOT_IMAGE: 'https://i.ibb.co/CpkMP9yk/ERFAN.jpg',
+        BOT_IMAGE: 'https://files.catbox.moe/pb5yiz.jpg',
         
         REACT_EMOJIS: ['😂', '❤️', '🔥', '👏', '😮', '😢', '🤣', '👍', '🎉', '🤔', '🙏', '😍', '😊', '🥰', '💕', '🤩', '✨', '😎', '🥳', '🙌'],
         OWNER_EMOJIS: ['❤️', '🔥', '👑', '⭐', '💎'],
