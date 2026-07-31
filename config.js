@@ -1,4 +1,3 @@
-
 // config.js - ESM Version
 import dotenv from 'dotenv';
 dotenv.config();
@@ -20,19 +19,18 @@ const config = {
     // Bot Configuration
     AUTO_VIEW_STATUS: 'true',
     AUTO_LIKE_STATUS: 'false',  // ADDED - Auto like status messages
-    AUTO_LIKE_EMOJI: 'false', 
     MENTION_REPLY: 'false',
     AUTO_RECORDING: 'false',
     AUTO_REACT: 'false',
     AUTO_TYPING: 'false',
     ALWAYS_ONLINE: 'false',
     VERSION: '4.0.0 Bᴇᴛᴀ',
-    DESCRIPTION: '*ᴘᴏᴡᴇʀᴇᴅ ʙʏ 𝐌ᴀғɪᴀ 𝐀ᴅᴇᴇʟ*',
+    DESCRIPTION: '*© ᴘᴏᴡᴇʀᴇᴅ ʙʏ 𝐌ᴀғɪᴀ 𝐀ᴅᴇᴇʟ*',
     ANTI_DELETE_PATH: 'inbox',
     ANTI_DELETE: 'false',
     ANTI_EDIT_PATH: 'inbox',
     ANTI_EDIT: 'false',
-    STICKER_NAME: 'GHOST-MD',
+    STICKER_NAME: '𝐆ʜᴏsᴛ-𝐌ᴅ',
     ANTI_LINK: 'true',
     WELCOME: 'false',
     GOODBYE: 'false',
@@ -47,16 +45,16 @@ const config = {
     AUTO_STATUS_SEEN: 'true',
     OWNER_REACT: 'false',
     OWNER_EMOJIS: ['❤️', '🔥', '👑', '⭐', '💎'],
-    REACT_EMOJIS: ['😂', '❤️', '🔥', '👏', '😮', '😢', '🤣', '👍', '🎉', '🤔', '🙏', '😍', '😊', '🥰', '💕', '🤩', '✨', '😎', '🥳', '🙌'],
+    REACT_EMOJIS: ['😂', '❤️', '🔥', '👏', '😮', '😢', '🙃', '👍', '🎉', '🤔', '🙏', '😍', '😊', '🥰', '💕', '🤩', '✨', '😎', '🥳', '🙌'],
     LIKE_EMOJIS: ['❤️', '👍', '😮', '😎', '💀'],  // ADDED - Emojis for auto like status
     
     // Bot Identity
-    BOT_NAME: '𝐆ʜᴏsᴛ 𝐌ᴅ',
-    OWNER_NAME: '𝐌ᴀғɪᴀ-𝐀ᴅᴇᴇʟ',
+    BOT_NAME: '𝐆ʜᴏsᴛ-𝐌ᴅ',
+    OWNER_NAME: '𝐌ᴀғɪᴀ 𝐀ᴅᴇᴇʟ',
     OWNER_NUMBER: '923174838990',
     DEV: '923131613251',
     IK_IMAGE_PATH: './lib/ERFAN.jpg',
-    BOT_IMAGE: 'https://files.catbox.moe/pb5yiz.jpg',
+    BOT_IMAGE: 'https:https://files.catbox.moe/pb5yiz.jpg',
     
     // Newsletter Configuration
     NEWSLETTER_JID: '120363404811118873@newsletter',
@@ -75,7 +73,6 @@ const config = {
         // Status & View Settings
         AUTO_VIEW_STATUS: 'true',
         AUTO_LIKE_STATUS: 'false',  // ADDED - Auto like status (disabled by default)
-        AUTO_LIKE_EMOJI: 'false', 
         MENTION_REPLY: 'false',
         AUTO_STATUS_SEEN: 'true',
         READ_MESSAGE: 'false',
@@ -107,17 +104,17 @@ const config = {
         
         // Bot Identity
         VERSION: '12.0.0 Bᴇᴛᴀ',
-        OWNER_NAME: '𝐌ᴀғɪᴀ-𝐀ᴅᴇᴇʟ',
-        OWNER_NUMBER: '923131613251',
-        DEV: '923174838990',
+        OWNER_NAME: '𝐌ᴀғɪᴀ 𝐀ᴅᴇᴇʟ',
+        OWNER_NUMBER: '923174838990',
+        DEV: '923131613251',
         DESCRIPTION: '*© ᴘᴏᴡᴇʀᴇᴅ ʙʏ 𝐌ᴀғɪᴀ 𝐀ᴅᴇᴇʟ*',
-        STICKER_NAME: '𝐆ʜᴏsᴛ 𝐌ᴅ',
+        STICKER_NAME: '𝐆ʜᴏsᴛ-𝐌ᴅ',
         MODE: 'public',
         PREFIX: '.',
         BOT_NAME: '𝐆ʜᴏsᴛ-𝐌ᴅ',
         BOT_IMAGE: 'https://files.catbox.moe/pb5yiz.jpg',
         
-        REACT_EMOJIS: ['😂', '❤️', '🔥', '👏', '😮', '😢', '🤣', '👍', '🎉', '🤔', '🙏', '😍', '😊', '🥰', '💕', '🤩', '✨', '😎', '🥳', '🙌'],
+        REACT_EMOJIS: ['😂', '❤️', '🔥', '👏', '😮', '😢', '🙃', '👍', '🎉', '🤔', '🙏', '😍', '😊', '🥰', '💕', '🤩', '✨', '😎', '🥳', '🙌'],
         OWNER_EMOJIS: ['❤️', '🔥', '👑', '⭐', '💎'],
         LIKE_EMOJIS: ['❤️', '👍', '😮', '😎', '💀'],  // ADDED - Emojis for auto like
         
