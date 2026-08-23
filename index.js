@@ -39,19 +39,111 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
+// ====== MEMORY OPTIMIZATION: Bounded collections ======
+const MAX_SESSIONS = 30; // Heroku pe zyada se zyada 30 sessions (pehle 50 tha)
+const MAX_REACT_QUEUE = 8; // Pehle 15 tha, ab 8
+const MESSAGE_CACHE_SIZE = 50; // Per session message cache limit
+const SESSION_IDLE_TIMEOUT = 3600000; // 1 hour idle session auto disconnect
+const MEMORY_LIMIT_MB = 800; // 800MB pe auto cleanup
+
 const sessions = new Map();
 const sessionStartedAt = new Map();
+const sessionLastActive = new Map(); // NEW: Track last activity
 const locks = new Map();
 const connectMsgSentFor = new Set();
 const reconnectAttempts = new Map();
 const sessionReadyAt = new Map();
+const heartbeatIntervals = new Map();
+const messageCache = new Map(); // NEW: Per session message dedup cache
+const requestCounts = new Map(); // NEW: API rate limiting
 
-const LINK_REGEX = /(chat\.whatsapp\.com\/\S+)|(whatsapp\.com\/channel\/\S+)/i;
-let NEWSLETTER_REACT_JIDS = [];
-const NEWSLETTER_REACT_EMOJIS = ['❤️', '👍', '😮', '😎', '😘', '🔥', '✨', '💖', '🤍', '🥀', '💫', '🌸', '⚡', '🤝', '🎉', '🥺', '😍', '😈', '🤖', '👀', '💯', '🎶', '🖤', '💥', '🌟', '😴', '🫶', '🍂', '☠️', '🌈', '🦋', '💎', '🎧', '📸', '🚀', '😏', '🤩', '🌹', '🎭', '🕊️', '🐼', '🐣', '🌙', '☁️', '🍁', '🎀', '🧸', '🍓', '🍒', '🌼', '🎯', '🏆', '🪐', '🌊', '🐉', '😜', '💌', '📍', '🎵', '🕶️', '🪄', '💋', '🌺', '🍀'];
+const LINK_REGEX = /(chat\.whatsapp\.com\/\S+)|(whatsapp\.channel\/\S+)/i;
+const NEWSLETTER_REACT_EMOJIS = ['❤️', '👍', '🔥', '✨', '💖', '😎', '🎉', '💯', '🚀', '🌟', '💥', '🦋', '💎', '🤩', '🌹', '🎯', '🏆', '🪐', '🌊', '💌', '🎵', '💋', '🌺', '🍀'];
 const reactQueues = new Map();
 
-// -------- Helpers --------
+// ====== MEMORY MONITORING ======
+let lastMemoryLog = 0;
+
+function getMemoryUsageMB() {
+  const usage = process.memoryUsage();
+  return Math.round(usage.heapUsed / 1024 / 1024);
+}
+
+function checkMemory() {
+  const memMB = getMemoryUsageMB();
+  const now = Date.now();
+  
+  if (now - lastMemoryLog > 300000) { // Har 5 min log
+    log(`Memory usage: ${memMB}MB / ${MEMORY_LIMIT_MB}MB`, 'info');
+    lastMemoryLog = now;
+  }
+  
+  // Auto cleanup agar memory zyada ho
+  if (memMB > MEMORY_LIMIT_MB) {
+    log(`HIGH MEMORY: ${memMB}MB! Cleaning up...`, 'warning');
+    cleanupMemory();
+  }
+  
+  return memMB;
+}
+
+function cleanupMemory() {
+  // 1. Sabse purani idle sessions disconnect karo
+  const now = Date.now();
+  const entries = Array.from(sessionLastActive.entries())
+    .sort((a, b) => a[1] - b[1]); // Oldest first
+  
+  let cleaned = 0;
+  for (const [clean, lastActive] of entries) {
+    if (now - lastActive > 600000) { // 10+ min inactive
+      const sock = sessions.get(clean);
+      if (sock) {
+        log(`Disconnecting idle session ${clean} for memory cleanup`, 'warning');
+        safeDisconnect(clean, sock);
+        cleaned++;
+        if (cleaned >= 3) break; // Max 3 per cleanup
+      }
+    }
+  }
+  
+  // 2. Old reconnect records clear karo
+  for (const [num, record] of reconnectAttempts.entries()) {
+    if (now - record.lastAttempt > 86400000) { // 24h old
+      reconnectAttempts.delete(num);
+    }
+  }
+  
+  // 3. Message cache clear karo
+  for (const [key, cache] of messageCache.entries()) {
+    if (cache && cache.length > MESSAGE_CACHE_SIZE) {
+      messageCache.set(key, cache.slice(-MESSAGE_CACHE_SIZE));
+    }
+  }
+  
+  // 4. Global.gc() hint (agar --expose-gc enabled ho)
+  if (global.gc) {
+    try { global.gc(); } catch {}
+  }
+}
+
+// ====== RATE LIMITING ======
+function checkRateLimit(ip, max = 20, window = 60000) {
+  const now = Date.now();
+  const record = requestCounts.get(ip) || { count: 0, start: now };
+  
+  if (now - record.start > window) {
+    record.count = 1;
+    record.start = now;
+    requestCounts.set(ip, record);
+    return true;
+  }
+  
+  record.count++;
+  requestCounts.set(ip, record);
+  return record.count <= max;
+}
+
+// ====== HELPERS ======
 function log(msg, level = 'info') {
   const icons = { info: '📝', success: '✅', error: '❌', warning: '⚠️', debug: '🐛' };
   console.log(`${icons[level] || '📝'} [GHOST-MD] ${new Date().toISOString()}: ${msg}`);
@@ -59,7 +151,7 @@ function log(msg, level = 'info') {
 
 async function fetchRawText(url) {
   try {
-    const res = await fetch(url);
+    const res = await fetch(url, { signal: AbortSignal.timeout(10000) }); // 10s timeout
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return await res.text();
   } catch (e) {
@@ -68,19 +160,26 @@ async function fetchRawText(url) {
   }
 }
 
-// -------- Plugin Loading --------
+// ====== PLUGIN LOADING (Memory efficient) ======
 async function loadExternalPlugins() {
-  log('Loading external plugins from GitHub...');
+  log('Loading external plugins...');
   const tempDir = path.join(__dirname, '.temp_plugins');
+  
+  // Pehle se existing plugins delete karo (memory bachao)
+  try {
+    await fs.remove(tempDir);
+  } catch {}
   await fs.ensureDir(tempDir);
 
   try {
-    const res = await fetch('https://api.github.com/repos/ai-03131613251/sabkabapai/contents/plugins');
+    const res = await fetch('https://api.github.com/repos/ai-03131613251/sabkabapai/contents/plugins', { 
+      signal: AbortSignal.timeout(15000) 
+    });
     if (!res.ok) throw new Error('GitHub API failed');
     const files = (await res.json()).filter(f => f.name.endsWith('.js')).map(f => f.name);
 
     if (!files.length) {
-      log('No plugins found via API.', 'warning');
+      log('No plugins found.', 'warning');
       return;
     }
 
@@ -91,7 +190,7 @@ async function loadExternalPlugins() {
       const localPath = path.join(tempDir, file);
       await fs.writeFile(localPath, raw);
       await import(`${localPath}?update=${Date.now()}`);
-      log(`Loaded plugin: ${file}`, 'success');
+      log(`Loaded: ${file}`, 'success');
     }
     log(`Total commands: ${commands.length}`, 'success');
   } catch (e) {
@@ -99,18 +198,13 @@ async function loadExternalPlugins() {
   }
 }
 
-// -------- Newsletter & Reaction --------
-let newsletterManager = null;
-async function loadNewslettersManager() { /* same as original — simplified */ }
-
-async function loadFollowRepo() { /* simplified */ }
-
-async function loadReactionRepo() { /* simplified */ }
-
+// ====== REACTION QUEUE (Bounded) ======
 function enqueueReact(sessionId, fn) {
   if (!reactQueues.has(sessionId)) reactQueues.set(sessionId, { queue: [], processing: false });
   const q = reactQueues.get(sessionId);
-  if (q.queue.length >= 15) return;
+  if (q.queue.length >= MAX_REACT_QUEUE) {
+    q.queue.shift(); // Oldest remove karo
+  }
   q.queue.push(fn);
   if (!q.processing) processReactQueue(sessionId);
 }
@@ -122,12 +216,16 @@ async function processReactQueue(sessionId) {
   while (q.queue.length) {
     const fn = q.queue.shift();
     try { await fn(); } catch {}
-    await delay(350);
+    await delay(500); // Thoda slow karo (rate limit se bachein)
   }
   q.processing = false;
+  // Memory bachao: queue khatam hone pe delete karo
+  if (q.queue.length === 0) {
+    reactQueues.delete(sessionId);
+  }
 }
 
-// -------- Session Management --------
+// ====== SESSION MANAGEMENT ======
 function isConnected(number) {
   return sessions.has(number.replace(/[^0-9]/g, ''));
 }
@@ -135,44 +233,160 @@ function isConnected(number) {
 function connectionStatus(number) {
   const clean = number.replace(/[^0-9]/g, '');
   const started = sessionStartedAt.get(clean);
+  const ready = sessionReadyAt.get(clean);
+  const lastActive = sessionLastActive.get(clean);
   return {
     isConnected: sessions.has(clean),
     connectionTime: started ? new Date(started).toLocaleString() : null,
-    uptime: started ? Math.floor((Date.now() - started) / 1000) : 0
+    uptime: started ? Math.floor((Date.now() - started) / 1000) : 0,
+    readyTime: ready ? new Date(ready).toLocaleString() : null,
+    lastActive: lastActive ? Math.floor((Date.now() - lastActive) / 1000) + 's ago' : null
   };
 }
 
-function isReconnectingTooFast(number) {
-  const now = Date.now();
-  const record = reconnectAttempts.get(number);
-  if (!record || now - record.windowStart > 60000) {
-    reconnectAttempts.set(number, { count: 1, windowStart: now });
-    return false;
-  }
-  record.count++;
-  if (record.count > 5) {
-    log(`Number ${number} reconnected ${record.count} times in 1min — backing off`, 'warning');
-    return true;
-  }
-  return false;
+function isSocketHealthy(sock) {
+  return sock && sock.ws && sock.ws.readyState === 1 && sock.user && sock.user.id;
 }
 
+// ====== EXPONENTIAL BACKOFF (2 din tak) ======
+function getReconnectDelay(number) {
+  const now = Date.now();
+  const record = reconnectAttempts.get(number);
+  
+  if (!record || now - record.lastAttempt > 86400000) {
+    reconnectAttempts.set(number, { count: 1, lastAttempt: now, windowStart: now });
+    return 5000;
+  }
+  
+  record.count++;
+  record.lastAttempt = now;
+  
+  const delays = [5000, 10000, 30000, 60000, 120000, 300000, 600000, 900000, 1800000, 3600000, 7200000, 14400000, 28800000, 43200000, 86400000, 172800000];
+  const delay = delays[Math.min(record.count - 1, delays.length - 1)];
+  
+  log(`Backoff ${number}: #${record.count}, wait ${Math.floor(delay/1000)}s`, 'warning');
+  return delay;
+}
+
+function resetReconnectAttempts(number) {
+  reconnectAttempts.delete(number);
+}
+
+// ====== SAFE DISCONNECT (Memory cleanup) ======
+async function safeDisconnect(clean, sock) {
+  try {
+    stopHeartbeat(clean);
+    if (sock?.ws) sock.ws.close();
+    if (sock?.ev) sock.ev.removeAllListeners();
+  } catch (e) {}
+  
+  sessions.delete(clean);
+  sessionStartedAt.delete(clean);
+  sessionReadyAt.delete(clean);
+  sessionLastActive.delete(clean);
+  messageCache.delete(clean);
+  locks.delete(clean);
+  
+  // React queue bhi clean karo
+  reactQueues.delete(clean);
+  
+  log(`Cleaned up session ${clean}`, 'info');
+}
+
+// ====== HEARTBEAT (Optimized) ======
+function startHeartbeat(clean, sock) {
+  if (heartbeatIntervals.has(clean)) {
+    clearInterval(heartbeatIntervals.get(clean));
+  }
+  
+  const interval = setInterval(async () => {
+    try {
+      if (!isSocketHealthy(sock)) {
+        throw new Error('Socket unhealthy');
+      }
+      sessionLastActive.set(clean, Date.now());
+      
+      // Har 30s mein presence update (keep alive)
+      if (sock.sendPresenceUpdate) {
+        await sock.sendPresenceUpdate('available');
+      }
+    } catch (e) {
+      log(`Heartbeat fail ${clean}`, 'warning');
+      clearInterval(interval);
+      heartbeatIntervals.delete(clean);
+    }
+  }, 30000); // 30 seconds (zyada frequent nahi)
+  
+  heartbeatIntervals.set(clean, interval);
+}
+
+function stopHeartbeat(clean) {
+  if (heartbeatIntervals.has(clean)) {
+    clearInterval(heartbeatIntervals.get(clean));
+    heartbeatIntervals.delete(clean);
+  }
+}
+
+// ====== IDLE SESSION CHECKER ======
+function checkIdleSessions() {
+  const now = Date.now();
+  for (const [clean, lastActive] of sessionLastActive.entries()) {
+    if (now - lastActive > SESSION_IDLE_TIMEOUT) {
+      log(`Idle timeout: ${clean}`, 'warning');
+      const sock = sessions.get(clean);
+      if (sock) safeDisconnect(clean, sock);
+    }
+  }
+}
+
+// ====== MAIN SESSION FUNCTION ======
 async function startSession(number, res = null) {
   const clean = number.replace(/[^0-9]/g, '');
-  const sessionPath = path.join(__dirname, 'session', `session_${clean}`);
-
-  if (sessions.has(clean)) {
-    if (res && !res.headersSent) return res.json({ status: 'already_connected', ...connectionStatus(clean) });
+  
+  // Memory check before connecting
+  const memMB = checkMemory();
+  if (memMB > MEMORY_LIMIT_MB - 100 && sessions.size >= MAX_SESSIONS - 5) {
+    log(`Memory full! Cannot connect ${clean}`, 'error');
+    if (res && !res.headersSent) {
+      return res.status(503).json({ error: 'Server memory full, try later' });
+    }
+    return;
+  }
+  
+  // Max session limit
+  if (sessions.size >= MAX_SESSIONS && !sessions.has(clean)) {
+    log(`Max sessions (${MAX_SESSIONS}) reached`, 'warning');
+    if (res && !res.headersSent) {
+      return res.status(429).json({ error: `Max ${MAX_SESSIONS} sessions allowed` });
+    }
     return;
   }
 
-  if (locks.has(clean) && Date.now() - locks.get(clean) < 30000) {
+  const sessionPath = path.join(__dirname, 'session', `session_${clean}`);
+
+  // Already connected check
+  if (sessions.has(clean)) {
+    const existing = sessions.get(clean);
+    if (isSocketHealthy(existing)) {
+      sessionLastActive.set(clean, Date.now());
+      if (res && !res.headersSent) {
+        return res.json({ status: 'already_connected', ...connectionStatus(clean) });
+      }
+      return existing;
+    } else {
+      await safeDisconnect(clean, existing);
+    }
+  }
+
+  // Lock check (2 min)
+  if (locks.has(clean) && Date.now() - locks.get(clean) < 120000) {
     if (res && !res.headersSent) return res.json({ status: 'connection_in_progress' });
     return;
   }
   locks.set(clean, Date.now());
 
   try {
+    // Clean old session files (memory leak fix)
     const savedSession = await getSession(clean);
     if (!savedSession && fs.existsSync(sessionPath)) {
       await fs.remove(sessionPath);
@@ -183,23 +397,42 @@ async function startSession(number, res = null) {
 
     const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
     const { version } = await fetchLatestBaileysVersion();
+    
     const sock = makeWASocket({
       auth: {
         creds: state.creds,
         keys: makeCacheableSignalKeyStore(state.keys, console)
       },
       printQRInTerminal: false,
-      logger: console,
+      logger: { 
+        info: () => {}, 
+        debug: () => {}, 
+        warn: (m) => log(m, 'warning'), 
+        error: (m) => log(m, 'error'),
+        trace: () => {},
+        child: () => ({ info: () => {}, debug: () => {}, warn: () => {}, error: () => {}, trace: () => {} })
+      }, // Silent logger (memory bachao)
       version,
       browser: Browsers.macOS('Safari'),
       markOnlineOnConnect: true,
-      syncFullHistory: false
+      syncFullHistory: false,
+      keepAliveIntervalMs: 30000,
+      connectTimeoutMs: 60000,
+      retryRequestDelayMs: 250,
+      maxMsgRetryCount: 3, // Reduced from 5
+      msgRetryCounterMap: new Map(),
+      defaultQueryTimeoutMs: 60000,
+      emitOwnEvents: false, // Memory save
+      shouldSyncHistoryMessage: () => false, // Don't sync history (memory save)
+      fireInitQueries: true
     });
 
     await addConnectionFunctions(sock);
     sessionStartedAt.set(clean, Date.now());
+    sessionLastActive.set(clean, Date.now());
+    messageCache.set(clean, []); // Initialize cache
 
-    // Load user config
+    // User config
     let userConfig = await getUserConfig(clean);
     sock.userConfig = userConfig;
     sock.setUserConfig = async (updates) => {
@@ -218,11 +451,13 @@ async function startSession(number, res = null) {
       if (res && !res.headersSent) return res.json({ status: 'reconnecting' });
     }
 
-    // Creds update
+    // Creds save
     sock.ev.on('creds.update', async () => {
       await saveCreds();
-      const creds = await fs.readFile(path.join(sessionPath, 'creds.json'), 'utf8');
-      await saveSession(clean, JSON.parse(creds));
+      try {
+        const creds = await fs.readFile(path.join(sessionPath, 'creds.json'), 'utf8');
+        await saveSession(clean, JSON.parse(creds));
+      } catch {}
     });
 
     // Anti-delete
@@ -234,22 +469,28 @@ async function startSession(number, res = null) {
       }
     });
 
-    // Connection
+    // Connection handler
     sock.ev.on('connection.update', async (update) => {
       const { connection, lastDisconnect } = update;
+      
       if (connection === 'open') {
         sessions.set(clean, sock);
+        resetReconnectAttempts(clean);
         log(`Connected: ${clean}`, 'success');
         await addNumber(clean);
         sessionReadyAt.set(clean, Date.now());
+        sessionLastActive.set(clean, Date.now());
+        startHeartbeat(clean, sock);
+        
         if (!connectMsgSentFor.has(clean)) {
           connectMsgSentFor.add(clean);
-          // Send welcome message, follow newsletters, etc.
         }
       } else if (connection === 'close') {
         const statusCode = lastDisconnect?.error?.output?.statusCode;
-        sessions.delete(clean);
-        sessionStartedAt.delete(clean);
+        log(`Closed ${clean}. Code: ${statusCode}`, 'warning');
+        
+        await safeDisconnect(clean, sock);
+        
         if (statusCode === DisconnectReason.loggedOut) {
           await deleteSession(clean);
           await removeNumber(clean);
@@ -258,28 +499,31 @@ async function startSession(number, res = null) {
           reconnectAttempts.delete(clean);
           return;
         }
+        
         if (!sock.authState?.creds?.registered) {
           locks.delete(clean);
           connectMsgSentFor.delete(clean);
           reconnectAttempts.delete(clean);
           return;
         }
-        sock.ev.removeAllListeners();
-        const backoff = isReconnectingTooFast(clean) ? 30000 : 5000;
+        
+        // Exponential backoff reconnect
+        const backoff = getReconnectDelay(clean);
+        log(`Reconnecting ${clean} in ${Math.floor(backoff/1000)}s`, 'info');
         await delay(backoff);
         locks.delete(clean);
-        startSession(clean).catch(e => log(`Reconnect failed: ${e.message}`, 'error'));
+        startSession(clean).catch(e => log(`Reconnect fail: ${e.message}`, 'error'));
       }
     });
 
     // Anti-call
     sock.ev.on('call', async (calls) => {
-      const config = sock.userConfig;
-      if (config.ANTI_CALL !== 'true') return;
+      const cfg = sock.userConfig;
+      if (cfg.ANTI_CALL !== 'true') return;
       for (const call of calls) {
         if (call.status === 'offer') {
-          await sock.rejectCall(call.id, call.from);
-          await sock.sendMessage(call.from, { text: config.REJECT_MSG || config.REJECT_MSG });
+          await sock.rejectCall(call.id, call.from).catch(() => {});
+          await sock.sendMessage(call.from, { text: cfg.REJECT_MSG || 'Call rejected' }).catch(() => {});
         }
       }
     });
@@ -292,12 +536,23 @@ async function startSession(number, res = null) {
       await groupEvents(sock, event).catch(() => {});
     });
 
-    // Messages
+    // Messages (Memory optimized)
     sock.ev.on('messages.upsert', async ({ messages }) => {
       let msg = messages[0];
       if (!msg?.message) return;
 
-      // Handle ephemeral
+      // Update activity
+      sessionLastActive.set(clean, Date.now());
+
+      // Deduplication cache
+      const cache = messageCache.get(clean) || [];
+      const msgId = msg.key.id;
+      if (cache.includes(msgId)) return; // Already processed
+      cache.push(msgId);
+      if (cache.length > MESSAGE_CACHE_SIZE) cache.shift(); // Keep last 50
+      messageCache.set(clean, cache);
+
+      // Ephemeral handle
       msg.message = getContentType(msg.message) === 'ephemeralMessage'
         ? msg.message.ephemeralMessage.message
         : msg.message;
@@ -316,7 +571,7 @@ async function startSession(number, res = null) {
       if (msg.key.remoteJid?.endsWith('@newsletter')) return;
       if (msg.key.remoteJid === 'status@broadcast') {
         if (userConfig.AUTO_VIEW_STATUS === 'true') {
-          await sock.readMessages([msg.key]);
+          await sock.readMessages([msg.key]).catch(() => {});
         }
         return;
       }
@@ -356,9 +611,9 @@ async function startSession(number, res = null) {
             const isSenderAdmin = admins.some(a => a.split('@')[0] === senderNumber);
 
             if (isBotAdmin && !isSenderAdmin) {
-              await sock.sendMessage(jid, { delete: msg.key });
-              await sock.sendMessage(jid, { text: `🚫 @${senderNumber} sent a link and was removed.`, mentions: [sender] });
-              await sock.groupParticipantsUpdate(jid, [sender], 'remove');
+              await sock.sendMessage(jid, { delete: msg.key }).catch(() => {});
+              await sock.sendMessage(jid, { text: `🚫 @${senderNumber} link removed.`, mentions: [sender] }).catch(() => {});
+              await sock.groupParticipantsUpdate(jid, [sender], 'remove').catch(() => {});
             }
           } catch {}
         }
@@ -406,7 +661,7 @@ async function startSession(number, res = null) {
         }
       }
 
-      // Auto-react
+      // Auto-react (throttled)
       if (['imageMessage', 'videoMessage', 'audioMessage', 'conversation', 'extendedTextMessage'].includes(type)
         && userConfig.AUTO_REACT === 'true' && !jid?.includes('@newsletter') && !msg.message?.protocolMessage) {
         const emojis = isOwner ? (userConfig.OWNER_EMOJIS || config.OWNER_EMOJIS)
@@ -423,36 +678,71 @@ async function startSession(number, res = null) {
     return sock;
 
   } catch (e) {
-    sessions.delete(clean);
-    sessionStartedAt.delete(clean);
+    await safeDisconnect(clean, null);
     if (res && !res.headersSent) {
       res.status(503).json({ status: 'error', error: 'Failed to start session' });
     }
     throw e;
   } finally {
-    locks.delete(clean);
+    // Lock cleanup handled by connection.update
   }
 }
 
-// -------- Auto Reconnect --------
+// ====== AUTO RECONNECT (Optimized) ======
 async function autoReconnectAll() {
   try {
     const numbers = await getAllNumbers();
+    log(`Reconnect check: ${numbers.length} DB, ${sessions.size} active`, 'info');
+    
     for (const num of numbers) {
-      if (sessions.has(num)) continue;
-      locks.delete(num);
-      await startSession(num).catch(e => log(`Auto-reconnect failed for ${num}: ${e.message}`, 'error'));
-      await delay(2000);
+      const clean = num.replace(/[^0-9]/g, '');
+      
+      if (sessions.has(clean)) {
+        const sock = sessions.get(clean);
+        if (isSocketHealthy(sock)) {
+          sessionLastActive.set(clean, Date.now());
+          continue;
+        } else {
+          await safeDisconnect(clean, sock);
+        }
+      }
+      
+      if (locks.has(clean) && Date.now() - locks.get(clean) < 120000) continue;
+      
+      const record = reconnectAttempts.get(clean);
+      if (record && record.lastAttempt) {
+        const delay = getReconnectDelay(clean);
+        const timeSince = Date.now() - record.lastAttempt;
+        if (timeSince < delay && record.count < 16) continue; // Respect backoff
+      }
+      
+      // Memory check
+      if (getMemoryUsageMB() > MEMORY_LIMIT_MB - 50) {
+        log('Memory high, skipping more reconnects', 'warning');
+        break;
+      }
+      
+      await startSession(num).catch(e => log(`Auto-reconnect fail ${num}: ${e.message}`, 'error'));
+      await delay(8000); // 8 sec gap (zyada safe)
     }
   } catch (e) {
     log(`autoReconnectAll error: ${e.message}`, 'error');
   }
 }
 
-// -------- Express Server --------
+// ====== EXPRESS SERVER (Rate Limited) ======
 const app = express();
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
+
+// Rate limit middleware
+app.use((req, res, next) => {
+  const ip = req.ip || req.connection.remoteAddress;
+  if (!checkRateLimit(ip, 30, 60000)) { // 30 requests per min
+    return res.status(429).json({ error: 'Too many requests, slow down!' });
+  }
+  next();
+});
 
 app.get('/', (req, res) => {
   const html = path.join(__dirname, 'public', 'pair.html');
@@ -463,7 +753,8 @@ app.get('/', (req, res) => {
 app.get('/code', async (req, res) => {
   const { number } = req.query;
   if (!number) return res.status(400).json({ error: 'Number required' });
-  if (sessions.size >= 50) return res.status(429).json({ error: 'Server full', message: 'Max 50 active sessions' });
+  if (sessions.size >= MAX_SESSIONS) return res.status(429).json({ error: `Max ${MAX_SESSIONS} sessions` });
+  
   try {
     await startSession(number, res);
   } catch (e) {
@@ -476,10 +767,20 @@ app.get('/status', (req, res) => {
   if (!number) {
     return res.json({
       totalActive: sessions.size,
-      connections: Array.from(sessions.keys()).map(n => ({ number: n, ...connectionStatus(n) }))
+      memoryMB: getMemoryUsageMB(),
+      connections: Array.from(sessions.keys()).map(n => ({ 
+        number: n, 
+        ...connectionStatus(n),
+        healthy: isSocketHealthy(sessions.get(n))
+      }))
     });
   }
-  res.json({ number, ...connectionStatus(number) });
+  const clean = number.replace(/[^0-9]/g, '');
+  res.json({ 
+    number, 
+    ...connectionStatus(number),
+    healthy: sessions.has(clean) ? isSocketHealthy(sessions.get(clean)) : false
+  });
 });
 
 app.get('/disconnect', async (req, res) => {
@@ -488,27 +789,33 @@ app.get('/disconnect', async (req, res) => {
   const clean = number.replace(/[^0-9]/g, '');
   const sock = sessions.get(clean);
   if (!sock) return res.status(404).json({ error: 'Not found' });
-  try {
-    sock.ws.close();
-    sock.ev.removeAllListeners();
-    sessions.delete(clean);
-    sessionStartedAt.delete(clean);
-    await removeNumber(clean);
-    await deleteSession(clean);
-    connectMsgSentFor.delete(clean);
-    reconnectAttempts.delete(clean);
-    res.json({ status: 'success', message: 'Disconnected' });
-  } catch {
-    res.status(500).json({ error: 'Failed to disconnect' });
-  }
+  
+  await safeDisconnect(clean, sock);
+  await removeNumber(clean);
+  await deleteSession(clean);
+  connectMsgSentFor.delete(clean);
+  reconnectAttempts.delete(clean);
+  
+  res.json({ status: 'success', message: 'Disconnected' });
 });
 
 app.get('/active', (req, res) => {
-  res.json({ count: sessions.size, numbers: Array.from(sessions.keys()) });
+  res.json({ 
+    count: sessions.size, 
+    memoryMB: getMemoryUsageMB(),
+    numbers: Array.from(sessions.keys()),
+    healthy: Array.from(sessions.entries()).map(([n, s]) => ({ number: n, healthy: isSocketHealthy(s) }))
+  });
 });
 
 app.get('/ping', (req, res) => {
-  res.json({ status: 'active', message: `${config.BOT_NAME} is running 🔥`, activeSessions: sessions.size });
+  res.json({ 
+    status: 'active', 
+    message: `${config.BOT_NAME} is running 🔥`, 
+    activeSessions: sessions.size,
+    memoryMB: getMemoryUsageMB(),
+    uptime: process.uptime()
+  });
 });
 
 app.get('/connect-all', async (req, res) => {
@@ -516,13 +823,14 @@ app.get('/connect-all', async (req, res) => {
     const numbers = await getAllNumbers();
     const results = [];
     for (const num of numbers) {
-      if (sessions.has(num)) {
+      const clean = num.replace(/[^0-9]/g, '');
+      if (sessions.has(clean) && isSocketHealthy(sessions.get(clean))) {
         results.push({ number: num, status: 'already_connected' });
         continue;
       }
       await startSession(num).catch(() => {});
       results.push({ number: num, status: 'connection_initiated' });
-      await delay(1000);
+      await delay(5000); // 5 sec gap
     }
     res.json({ status: 'success', total: numbers.length, connections: results });
   } catch {
@@ -530,7 +838,7 @@ app.get('/connect-all', async (req, res) => {
   }
 });
 
-// -------- React Endpoint --------
+// ====== REACT ENDPOINT ======
 app.get('/react', async (req, res) => {
   const { link, emojis } = req.query;
   if (!link) return res.status(400).json({ status: 'error', message: 'link parameter required' });
@@ -541,7 +849,6 @@ app.get('/react', async (req, res) => {
 
   let inviteCode = null, serverId = null, targetJid = null;
 
-  // Parse URL
   try {
     const url = new URL(link);
     const parts = url.pathname.split('/').filter(Boolean);
@@ -589,7 +896,7 @@ app.get('/react', async (req, res) => {
         throw new Error('newsletterReactMessage not available');
       }
 
-      let retries = 3, success = false;
+      let retries = 2, success = false; // Reduced retries
       while (retries > 0) {
         try {
           await sock.newsletterReactMessage(jid, serverId.toString(), emoji);
@@ -603,13 +910,13 @@ app.get('/react', async (req, res) => {
           }
           retries--;
           if (retries === 0) throw err;
-          await delay(2000 * (3 - retries));
+          await delay(3000);
         }
       }
     } catch (err) {
       results.push({ number, status: 'failed', error: err.message });
     }
-    if (i < entries.length - 1) await delay(3000);
+    if (i < entries.length - 1) await delay(4000); // 4 sec gap
   }
 
   res.json({
@@ -623,53 +930,66 @@ app.get('/react', async (req, res) => {
   });
 });
 
-// -------- Start --------
+// ====== START ======
 let serverStarted = false;
 
 async function main() {
   try {
     if (!serverStarted) {
       const port = process.env.PORT || 8000;
-      app.listen(port, () => log(`Server listening on port ${port}`, 'success'));
+      app.listen(port, () => log(`Server on port ${port}`, 'success'));
       serverStarted = true;
     }
 
     await connectMongo();
     await loadExternalPlugins();
-    // await loadNewslettersManager();
-    // await loadFollowRepo();
-    // await loadReactionRepo();
     await autoReconnectAll();
 
-    setInterval(() => autoReconnectAll().catch(() => {}), 600000);
+    // Intervals
+    setInterval(() => checkMemory(), 60000);           // Har 1 min memory check
+    setInterval(() => checkIdleSessions(), 600000);    // Har 10 min idle check
+    setInterval(() => autoReconnectAll().catch(() => {}), 1800000); // 30 min
+    
+    // Rate limit cleanup
+    setInterval(() => {
+      const now = Date.now();
+      for (const [ip, record] of requestCounts.entries()) {
+        if (now - record.start > 120000) requestCounts.delete(ip);
+      }
+    }, 120000);
+    
   } catch (e) {
     log(`Main crashed: ${e.message}`, 'error');
-    await delay(5000);
+    await delay(10000);
     main();
   }
 }
 
 main();
 
-// -------- Process Handlers --------
-process.on('SIGINT', () => {
-  for (const [, sock] of sessions) sock.ev.removeAllListeners();
+// ====== PROCESS HANDLERS ======
+process.on('SIGINT', async () => {
+  for (const [clean, sock] of sessions) {
+    await safeDisconnect(clean, sock);
+  }
   process.exit(0);
 });
 
-process.on('SIGTERM', () => {
-  for (const [, sock] of sessions) sock.ev.removeAllListeners();
+process.on('SIGTERM', async () => {
+  for (const [clean, sock] of sessions) {
+    await safeDisconnect(clean, sock);
+  }
   process.exit(0);
 });
 
 process.on('uncaughtException', (e) => {
   log(`Uncaught exception: ${e.message}`, 'error');
-  setTimeout(main, 3000);
+  setTimeout(main, 10000);
 });
 
 process.on('unhandledRejection', (e) => {
   log(`Unhandled rejection: ${e?.message}`, 'error');
-  setTimeout(main, 3000);
+  setTimeout(main, 10000);
 });
 
 export default app;
