@@ -2,7 +2,7 @@
   "name": "ghost-MD",
   "version": "1.5.0",
   "type": "module",
-  "description": "adeel WhatsApp Bot - Latest Baileys 7.0.0-rc14",
+  "description": "adeel WhatsApp Bot - Latest Baileys 7.0.0-rc13",
   "main": "index.js",
   "scripts": {
     "start": "node --expose-gc index.js",
@@ -14,7 +14,7 @@
     "node": ">=20.0.0"
   },
   "dependencies": {
-    "@whiskeysockets/baileys": "7.0.0-rc14",
+    "@whiskeysockets/baileys": "7.0.0-rc9",
     "@ffmpeg-installer/ffmpeg": "^1.1.0",
     "@vitalets/google-translate-api": "^9.2.1",
     "link-preview-js": "^3.0.15",
