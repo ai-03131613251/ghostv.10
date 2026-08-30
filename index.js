@@ -38,7 +38,6 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-// ====== MEMORY OPTIMIZATION ======
 const MAX_SESSIONS = 30;
 const MAX_REACT_QUEUE = 8;
 const MESSAGE_CACHE_SIZE = 50;
@@ -63,7 +62,7 @@ const reactQueues = new Map();
 const logger = pino({ level: 'silent' });
 
 let lastMemoryLog = 0;
-let isMainRunning = false;          // ← restart loop rokne ke liye
+let isMainRunning = false;
 let serverStarted = false;
 
 function getMemoryUsageMB() {
@@ -143,7 +142,6 @@ async function loadExternalPlugins() {
   const tempDir = path.join(__dirname, '.temp_plugins');
   try { await fs.remove(tempDir); } catch {}
   await fs.ensureDir(tempDir);
-
   try {
     const res = await fetch('https://api.github.com/repos/ai-03131613251/sabkabapai/contents/plugins', {
       signal: AbortSignal.timeout(15000)
@@ -213,11 +211,11 @@ function getReconnectDelay(number) {
   let record = reconnectAttempts.get(number);
   if (!record || now - record.lastAttempt > 86400000) {
     reconnectAttempts.set(number, { count: 1, lastAttempt: now });
-    return 8000;
+    return 10000;
   }
   record.count++;
   record.lastAttempt = now;
-  const delays = [8000, 15000, 30000, 60000, 120000, 300000, 600000, 900000, 1800000];
+  const delays = [10000, 20000, 40000, 60000, 120000, 300000, 600000, 900000, 1800000];
   const d = delays[Math.min(record.count - 1, delays.length - 1)];
   log(`Backoff \( {number}: # \){record.count} → ${Math.floor(d / 1000)}s`, 'warning');
   return d;
@@ -295,7 +293,6 @@ async function startSession(number, res = null) {
 
   const sessionPath = path.join(__dirname, 'session', `session_${clean}`);
 
-  // Already healthy?
   if (sessions.has(clean)) {
     const existing = sessions.get(clean);
     if (isSocketHealthy(existing)) {
@@ -306,8 +303,7 @@ async function startSession(number, res = null) {
     await safeDisconnect(clean, existing);
   }
 
-  // Lock
-  if (locks.has(clean) && Date.now() - locks.get(clean) < 90000) {
+  if (locks.has(clean) && Date.now() - locks.get(clean) < 120000) {
     if (res && !res.headersSent) return res.json({ status: 'connection_in_progress' });
     return;
   }
@@ -315,11 +311,14 @@ async function startSession(number, res = null) {
 
   try {
     const savedSession = await getSession(clean).catch(() => null);
+
     if (!savedSession && fs.existsSync(sessionPath)) {
       await fs.remove(sessionPath).catch(() => {});
     } else if (savedSession) {
       await fs.ensureDir(sessionPath);
       await fs.writeFile(path.join(sessionPath, 'creds.json'), JSON.stringify(savedSession, null, 2));
+    } else {
+      await fs.ensureDir(sessionPath);
     }
 
     const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
@@ -331,23 +330,25 @@ async function startSession(number, res = null) {
       },
       printQRInTerminal: false,
       logger,
-      browser: Browsers.macOS('Safari'),
-      markOnlineOnConnect: true,
+      browser: Browsers.ubuntu('Chrome'),
+      markOnlineOnConnect: false,
       syncFullHistory: false,
-      keepAliveIntervalMs: 30000,
-      connectTimeoutMs: 60000,
-      retryRequestDelayMs: 250,
-      maxMsgRetryCount: 3,
+      keepAliveIntervalMs: 25000,
+      connectTimeoutMs: 120000,
       defaultQueryTimeoutMs: 60000,
       emitOwnEvents: false,
       shouldSyncHistoryMessage: () => false,
-      fireInitQueries: true
+      fireInitQueries: true,
+      getMessage: async () => undefined
     });
 
-    await addConnectionFunctions(sock).catch(() => {});
+    // Socket pehle se map me — pairing ke time na maray
+    sessions.set(clean, sock);
     sessionStartedAt.set(clean, Date.now());
     sessionLastActive.set(clean, Date.now());
     messageCache.set(clean, []);
+
+    await addConnectionFunctions(sock).catch(() => {});
 
     let userConfig = await getUserConfig(clean).catch(() => ({}));
     sock.userConfig = userConfig || {};
@@ -357,27 +358,17 @@ async function startSession(number, res = null) {
       return sock.userConfig;
     };
 
-    // Pairing code
-    if (!sock.authState.creds.registered) {
-      await delay(1500);
-      try {
-        const code = await sock.requestPairingCode(clean);
-        log(`Pairing code for ${clean}: ${code}`, 'success');
-        if (res && !res.headersSent) return res.json({ status: 'new_pairing', code });
-      } catch (e) {
-        log(`Pairing code error: ${e.message}`, 'error');
-        if (res && !res.headersSent) return res.status(500).json({ error: 'Failed to get pairing code' });
-      }
-    } else {
-      if (res && !res.headersSent) return res.json({ status: 'reconnecting' });
-    }
-
     sock.ev.on('creds.update', async () => {
       try {
         await saveCreds();
-        const creds = await fs.readFile(path.join(sessionPath, 'creds.json'), 'utf8');
-        await saveSession(clean, JSON.parse(creds));
-      } catch {}
+        const credsPath = path.join(sessionPath, 'creds.json');
+        if (fs.existsSync(credsPath)) {
+          const creds = await fs.readFile(credsPath, 'utf8');
+          await saveSession(clean, JSON.parse(creds));
+        }
+      } catch (e) {
+        log(`creds.save error: ${e.message}`, 'warning');
+      }
     });
 
     sock.ev.on('messages.update', async (updates) => {
@@ -388,21 +379,24 @@ async function startSession(number, res = null) {
       }
     });
 
-    // ========== CONNECTION HANDLER (Restart-safe) ==========
     sock.ev.on('connection.update', async (update) => {
       const { connection, lastDisconnect } = update;
+
+      if (connection === 'connecting') {
+        log(`Connecting... ${clean}`, 'info');
+        return;
+      }
 
       if (connection === 'open') {
         sessions.set(clean, sock);
         resetReconnectAttempts(clean);
         locks.delete(clean);
-        log(`Connected: ${clean}`, 'success');
+        log(`✅ CONNECTED: ${clean}`, 'success');
         await addNumber(clean).catch(() => {});
         sessionReadyAt.set(clean, Date.now());
         sessionLastActive.set(clean, Date.now());
         startHeartbeat(clean, sock);
 
-        // First Response (sirf ek baar)
         if (!connectMsgSentFor.has(clean)) {
           connectMsgSentFor.add(clean);
           try {
@@ -422,8 +416,7 @@ Mode: ${mode}
 Bot is ready.
 Type *${prefix}menu* for commands.`;
 
-            const ownerJid = `${owner}@s.whatsapp.net`;
-            await sock.sendMessage(ownerJid, { text: welcomeText }).catch(() => {});
+            await sock.sendMessage(`${owner}@s.whatsapp.net`, { text: welcomeText }).catch(() => {});
             await sock.sendMessage(`${clean}@s.whatsapp.net`, { text: welcomeText }).catch(() => {});
             log(`First response sent → ${clean}`, 'success');
           } catch (e) {
@@ -435,13 +428,12 @@ Type *${prefix}menu* for commands.`;
 
       if (connection === 'close') {
         const statusCode = lastDisconnect?.error?.output?.statusCode;
-        const reason = lastDisconnect?.error?.message || 'unknown';
-        log(`Closed ${clean} | Code: ${statusCode} | ${reason}`, 'warning');
+        const errMsg = lastDisconnect?.error?.message || '';
+        log(`Closed ${clean} | Code: ${statusCode} | ${errMsg}`, 'warning');
 
-        // Pehle clean karo
         await safeDisconnect(clean, sock);
 
-        // Logged out → permanent stop
+        // Logged out / unauthorized
         if (statusCode === DisconnectReason.loggedOut || statusCode === 401) {
           await deleteSession(clean).catch(() => {});
           await removeNumber(clean).catch(() => {});
@@ -453,21 +445,20 @@ Type *${prefix}menu* for commands.`;
           return;
         }
 
-        // Abhi registered nahi → pairing incomplete
+        // Pairing incomplete — reconnect mat karo
         if (!state.creds?.registered) {
           locks.delete(clean);
           connectMsgSentFor.delete(clean);
-          reconnectAttempts.delete(clean);
+          log(`Pairing not completed for ${clean}. Request new code from /code`, 'warning');
           return;
         }
 
-        // Temporary close → reconnect with backoff (sirf yahan se)
+        // Registered thi → backoff se reconnect
         const backoff = getReconnectDelay(clean);
         log(`Will reconnect ${clean} in ${Math.floor(backoff / 1000)}s`, 'info');
-        
         setTimeout(() => {
           locks.delete(clean);
-          startSession(clean).catch(e => log(`Reconnect fail ${clean}: ${e.message}`, 'error'));
+          startSession(clean).catch(e => log(`Reconnect fail: ${e.message}`, 'error'));
         }, backoff);
       }
     });
@@ -553,7 +544,6 @@ Type *${prefix}menu* for commands.`;
           userConfig.OWNER_NUMBER?.includes?.(senderNumber) ||
           isMe;
 
-        // Anti-link
         if (isGroup && !isMe && !isOwner && text) {
           const antiLink = userConfig.ANTI_LINK;
           if (antiLink && antiLink !== 'false' && antiLink !== 'off' && LINK_REGEX.test(text)) {
@@ -594,7 +584,6 @@ Type *${prefix}menu* for commands.`;
           }
         }
 
-        // Auto react
         if (['imageMessage', 'videoMessage', 'audioMessage', 'conversation', 'extendedTextMessage'].includes(type)
           && userConfig.AUTO_REACT === 'true' && !jid?.includes('@newsletter') && !msg.message?.protocolMessage) {
           const emojis = isOwner
@@ -609,6 +598,34 @@ Type *${prefix}menu* for commands.`;
         log(`messages.upsert error: ${e.message}`, 'error');
       }
     });
+
+    // ========== PAIRING CODE (Heroku-safe) ==========
+    if (!sock.authState.creds.registered) {
+      await delay(4000); // socket ready hone do
+      try {
+        const code = await sock.requestPairingCode(clean);
+        log(`📲 Pairing code for ${clean}: ${code}`, 'success');
+        if (res && !res.headersSent) {
+          return res.json({
+            status: 'new_pairing',
+            code,
+            number: clean,
+            message: 'WhatsApp → Linked Devices → Link with phone number → code enter karo. Server band mat karo. 30 sec wait karo.'
+          });
+        }
+      } catch (e) {
+        log(`Pairing code error: ${e.message}`, 'error');
+        locks.delete(clean);
+        sessions.delete(clean);
+        if (res && !res.headersSent) {
+          return res.status(500).json({ error: 'Failed to get pairing code', details: e.message });
+        }
+      }
+    } else {
+      if (res && !res.headersSent) {
+        return res.json({ status: 'reconnecting', number: clean });
+      }
+    }
 
     return sock;
 
@@ -635,7 +652,7 @@ async function autoReconnectAll() {
         continue;
       }
 
-      if (locks.has(clean) && Date.now() - locks.get(clean) < 90000) continue;
+      if (locks.has(clean) && Date.now() - locks.get(clean) < 120000) continue;
 
       const record = reconnectAttempts.get(clean);
       if (record) {
@@ -649,21 +666,20 @@ async function autoReconnectAll() {
       }
 
       await startSession(num).catch(e => log(`Auto-reconnect ${num}: ${e.message}`, 'error'));
-      await delay(10000); // 10 sec gap
+      await delay(12000);
     }
   } catch (e) {
     log(`autoReconnectAll: ${e.message}`, 'error');
   }
 }
 
-// ====== EXPRESS ======
 const app = express();
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
 app.use((req, res, next) => {
   const ip = req.ip || req.connection?.remoteAddress || 'unknown';
-  if (!checkRateLimit(ip, 30, 60000)) {
+  if (!checkRateLimit(ip, 40, 60000)) {
     return res.status(429).json({ error: 'Too many requests' });
   }
   next();
@@ -751,7 +767,7 @@ app.get('/connect-all', async (req, res) => {
       }
       await startSession(num).catch(() => {});
       results.push({ number: num, status: 'connection_initiated' });
-      await delay(8000);
+      await delay(10000);
     }
     res.json({ status: 'success', total: numbers.length, connections: results });
   } catch {
@@ -759,7 +775,6 @@ app.get('/connect-all', async (req, res) => {
   }
 });
 
-// ====== MAIN (sirf ek baar) ======
 async function main() {
   if (isMainRunning) {
     log('main() already running, skip', 'warning');
@@ -778,10 +793,9 @@ async function main() {
     await loadExternalPlugins();
     await autoReconnectAll();
 
-    // Intervals sirf ek baar
     setInterval(() => checkMemory(), 60000);
     setInterval(() => checkIdleSessions(), 600000);
-    setInterval(() => autoReconnectAll().catch(() => {}), 30 * 60 * 1000); // 30 min
+    setInterval(() => autoReconnectAll().catch(() => {}), 30 * 60 * 1000);
 
     setInterval(() => {
       const now = Date.now();
@@ -793,7 +807,6 @@ async function main() {
   } catch (e) {
     log(`Main error: ${e.message}`, 'error');
     isMainRunning = false;
-    // 30 second baad ek baar try (infinite loop nahi)
     setTimeout(() => {
       isMainRunning = false;
       main();
@@ -803,28 +816,24 @@ async function main() {
 
 main();
 
-// ====== PROCESS HANDLERS (Restart loop band) ======
 process.on('SIGINT', async () => {
-  log('SIGINT received, shutting down...', 'warning');
+  log('SIGINT — shutting down...', 'warning');
   for (const [clean, sock] of sessions) await safeDisconnect(clean, sock);
   process.exit(0);
 });
 
 process.on('SIGTERM', async () => {
-  log('SIGTERM received, shutting down...', 'warning');
+  log('SIGTERM — shutting down...', 'warning');
   for (const [clean, sock] of sessions) await safeDisconnect(clean, sock);
   process.exit(0);
 });
 
-// ★★★ Yeh do lines restart loop ka asli ilaj hain ★★★
 process.on('uncaughtException', (e) => {
   log(`Uncaught: ${e.message}`, 'error');
-  // main() dubara NA chalao
 });
 
 process.on('unhandledRejection', (e) => {
   log(`Unhandled rejection: ${e?.message || e}`, 'error');
-  // main() dubara NA chalao
 });
 
 export default app;
