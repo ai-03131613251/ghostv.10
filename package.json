@@ -14,7 +14,7 @@
     "node": ">=20.0.0"
   },
   "dependencies": {
-    "@whiskeysockets/baileys": "7.0.0-rc14",
+    "@whiskeysockets/baileys": "7.0.0-rc.9",
     "@ffmpeg-installer/ffmpeg": "^1.1.0",
     "@vitalets/google-translate-api": "^9.2.1",
     "link-preview-js": "^3.0.15",
