@@ -1,8 +1,8 @@
 {
-  "name": "ERFAN-MD",
-  "description": "Javascript WhatsApp bot made by ERFAN-TechXD",
-  "logo": "https://files.catbox.moe/6h8yvz.jpg",
-  "keywords": ["ERFAN-BOT"],
+  "name": "GHOST-MD",
+  "description": "Javascript WhatsApp bot made by GHOST-TechXD",
+  "logo": "https://i.ibb.co/Vp97fDZ6/ERFAN-MD.jpg",
+  "keywords": ["GHOST-BOT"],
   "success_url": "/",
   "stack": "container",
   
@@ -12,9 +12,9 @@
       "required": false
     },
     "DB_NAME": {
-      "description": "Database name for MongoDB (default: ERFAN-MD)",
+      "description": "Database name for MongoDB (default: GHOST-MD)",
       "required": false,
-      "value": "ERFAN-MD"
+      "value": "GHOST-MD"
     }
   },
 
