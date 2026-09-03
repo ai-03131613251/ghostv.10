@@ -1,4 +1,4 @@
-// command.js - ESM Version
+// command.js - ESM Version by MAFIA ADEEL 
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 
