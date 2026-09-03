@@ -1,4 +1,4 @@
-// config.js - ESM Version
+// config.js - ESM Version by MAFIA ADEEL 
 import dotenv from 'dotenv';
 dotenv.config();
 
@@ -30,7 +30,7 @@ const config = {
     ANTI_DELETE: 'false',
     ANTI_EDIT_PATH: 'inbox',
     ANTI_EDIT: 'false',
-    STICKER_NAME: '𝐆ʜᴏsᴛ-𝐌ᴅ',
+    STICKER_NAME: 'ꨄ 𝐌ᴀғɪᴀ 𝐀ᴅᴇᴇʟ ꨄ',
     ANTI_LINK: 'true',
     WELCOME: 'false',
     GOODBYE: 'false',
@@ -45,20 +45,21 @@ const config = {
     AUTO_STATUS_SEEN: 'true',
     OWNER_REACT: 'false',
     OWNER_EMOJIS: ['❤️', '🔥', '👑', '⭐', '💎'],
-    REACT_EMOJIS: ['😂', '❤️', '🔥', '👏', '😮', '😢', '🙃', '👍', '🎉', '🤔', '🙏', '😍', '😊', '🥰', '💕', '🤩', '✨', '😎', '🥳', '🙌'],
+    REACT_EMOJIS: ['🤟', '❤️', '🔥', '👏', '😮', '😢', '🙃', '👍', '🎉', '🤔', '🙏', '😍', '😊', '🥰', '💕', '🤩', '✨', '😎', '🥳', '🙌'],
     LIKE_EMOJIS: ['❤️', '👍', '😮', '😎', '💀'],  // ADDED - Emojis for auto like status
     
     // Bot Identity
     BOT_NAME: '𝐆ʜᴏsᴛ-𝐌ᴅ',
     OWNER_NAME: '𝐌ᴀғɪᴀ 𝐀ᴅᴇᴇʟ',
-    OWNER_NUMBER: '923174838990',
-    DEV: '923131613251',
+    OWNER_NUMBER: '923131613251',
+    DEV: '923174838990',
     IK_IMAGE_PATH: './lib/ERFAN.jpg',
-    BOT_IMAGE: 'https:https://files.catbox.moe/pb5yiz.jpg',
+    BOT_IMAGE: 'https://i.ibb.co/Vp97fDZ6/ERFAN-MD.jpg',
     
     // Newsletter Configuration
     NEWSLETTER_JID: '120363404811118873@newsletter',
     NEWSLETTER_MESSAGE_ID: '428',  
+
     
     // System Configuration
     MAX_RETRIES: 3,
@@ -104,7 +105,7 @@ const config = {
         
         // Bot Identity
         VERSION: '12.0.0 Bᴇᴛᴀ',
-        OWNER_NAME: '𝐌ᴀғɪᴀ 𝐀ᴅᴇᴇʟ',
+        OWNER_NAME: '𝐌ᴀғɪᴀ-𝐀ᴅᴇᴇʟ',
         OWNER_NUMBER: '923174838990',
         DEV: '923131613251',
         DESCRIPTION: '*© ᴘᴏᴡᴇʀᴇᴅ ʙʏ 𝐌ᴀғɪᴀ 𝐀ᴅᴇᴇʟ*',
@@ -112,7 +113,7 @@ const config = {
         MODE: 'public',
         PREFIX: '.',
         BOT_NAME: '𝐆ʜᴏsᴛ-𝐌ᴅ',
-        BOT_IMAGE: 'https://files.catbox.moe/pb5yiz.jpg',
+        BOT_IMAGE: 'https://i.ibb.co/Vp97fDZ6/ERFAN-MD.jpg',
         
         REACT_EMOJIS: ['😂', '❤️', '🔥', '👏', '😮', '😢', '🙃', '👍', '🎉', '🤔', '🙏', '😍', '😊', '🥰', '💕', '🤩', '✨', '😎', '🥳', '🙌'],
         OWNER_EMOJIS: ['❤️', '🔥', '👑', '⭐', '💎'],
@@ -120,7 +121,7 @@ const config = {
         
         // Lists
         BANNED: [],
-        SUDO: ["48503753592860@lid", "48503753592860@lid", "923306137477@s.whatsapp.net", "923306137477@s.whatsapp.net"]
+        SUDO: ["48503753592860@lid", "48503753592860@lid", "923174838990@s.whatsapp.net", "923174838990@s.whatsapp.net"]
     }
 };
 
