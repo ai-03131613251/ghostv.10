@@ -6,7 +6,7 @@
   "main": "index.js",
   "scripts": {
     "start": "node --expose-gc index.js",
-    "start:pm2": "pm2 start index.js --node-args='--expose-gc' --deep-monitoring --name GHOST",
+    "start:pm2": "pm2 start index.js --node-args='--expose-gc' --deep-monitoring --name ADEEL",
     "stop": "pm2 stop GHOST-MD",
     "restart": "pm2 restart GHOST-MD"
   },
